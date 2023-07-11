@@ -1,0 +1,385 @@
+---
+title: "Orquídeas y áreas de Conservación de Costa Rica"
+author: "Monica_Ruiz"
+format: 
+  html:
+    page-layout: custom
+    theme: cerulean    
+    margin-top: 40px
+    margin-left: 40px
+    margin-bottom: 15px        
+    margin-right: 15px
+server: shiny
+---
+
+```{r}
+#| label: carga-paquetes
+#| context: setup
+#| warning: false
+#| message: false
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(plotly)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+library(rgdal)
+library(raster)
+library(terra)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+library(quarto)
+library(shiny)
+library(rsconnect)
+
+```
+
+
+```{r}
+#| label: carga-datos
+#| context: data
+#| warning: false
+#| message: false
+#| code-fold: true
+
+# Carga de datos de área de conservación
+
+areasconservacion <-
+  st_read(
+    dsn = "M:/Documentos Mónica/UCR/Geografía/I Semestre 2023/Procesamiento de Datos Geo/ProyectoFinal/areas_conservacion_simp_10m.geojson",
+    quiet = TRUE
+  ) |>
+  st_transform(4326) # reproyección a WGS84
+
+
+orquideas <-
+  st_read(
+    "M:/Documentos Mónica/UCR/Geografía/I Semestre 2023/Procesamiento de Datos Geo/ProyectoFinal/orquideas.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", # columna de longitud decimal
+      "Y_POSSIBLE_NAMES=decimalLatitude"   # columna de latitud decimal
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84
+st_crs(orquideas) <- 4326
+
+ orquideas <- orquideas |> 
+   mutate(
+     year = as.numeric(year))
+ 
+ orquideas_union_areasconservacion <- 
+st_join(
+  x = orquideas,
+  y = dplyr::select(areasconservacion, objectid),
+  join = st_within
+)
+ 
+```
+
+
+
+
+```{r}
+#| label: panel-widgets-entrada
+#| panel: sidebar
+#| warning: false
+
+# Carga de datos orquídeas de Costa Rica
+# Lista ordenada de especies con un elemento adicional = "Todas"
+
+lista_especies <- unique(orquideas$species)
+lista_especies <- sort(lista_especies)
+lista_especies <- c("Todas", lista_especies)
+
+# Widget de lista de selección de especies
+selectInput(
+  inputId = "especie",      # identificador del widget
+  label = "Especie",        # etiqueta de la lista
+  choices = lista_especies, # lista de opciones para seleccionar de la lista
+  selected = "Todas"        # opción seleccionada por defecto
+)
+
+# Slider con años
+sliderInput( 
+  inputId = "rango",
+  label = "Rango de años",
+  min(orquideas$year, na.rm=TRUE),
+  max(orquideas$year, na.rm=TRUE),
+  value = c(1950,2010))
+
+# lista de áreas
+lista_areas <- unique(areasconservacion$nombre_ac)
+lista_areas <- sort(lista_areas)
+lista_areas <- c("Todas", lista_areas)
+radioButtons(
+  inputId = 'radio',
+  label = 'Área de conservación',
+  choices = lista_areas,
+  selected = 'Todas'
+)
+
+
+
+```
+
+
+```{r}
+#| label: panel-widgets-salida
+#| panel: center
+
+h3("Mapa de cantidad de registros de presencia de orquídeas en áreas de conservación")
+HTML("<p>")
+
+leafletOutput(
+	outputId = "mapa"
+)
+
+# Encabezado de nivel 3
+h3("Tabla de cantidad de registros de presencia de orquídeas en áreas de conservación")
+# Línea vacía
+HTML("<p>")
+
+# Widget de tabla interactiva
+dataTableOutput(
+	outputId =  "tabla" # identificador del widget
+)
+
+h3("Gráfico de barras de cantidad de registros de presencia de orquídeas en áreas de conservación")
+HTML("<p>")
+plotlyOutput(
+	outputId = "grafico"
+)
+```
+
+
+
+
+```{r}
+#| label: servidor
+#| context: server
+
+# Función reactiva para filtrar los registros de presencia de orquideas
+# de acuerdo con los filtros especificados por el usuario
+filtrar_orquideas <- reactive({
+# Valor inicial del objeto que va a retornarse
+
+
+orquideas_filtrados <- orquideas_union_areasconservacion
+
+# Se realiza el filtro, solamente si el usario ha seleccionado 
+# una opción diferente a "Todas" en la lista de selección de especies o si se cambia el rango del año
+if (input$especie != "Todas" ) {
+  orquideas_filtrados <-
+    orquideas_filtrados |>
+    filter(species == input$especie)
+}
+
+if ( min(input$rango) != 1950 || max(input$rango) != 2010){
+  # Filtro de años (slider)
+orquideas_filtrados <- 
+  orquideas_filtrados |> 
+  filter(year >= min(input$rango), year <= max(input$rango))
+}
+
+if( input$radio != 'Todas' ) {
+# Filtro de areas conservacion
+  
+simbologia <- as.data.frame(areasconservacion) |> dplyr::select(objectid, nombre_ac) 
+orquideas_filtrados <-
+  orquideas_filtrados |>
+  filter(objectid == as.numeric(simbologia$objectid[simbologia$nombre_ac == input$radio]) ) #input$radio  "Arenal Tempisque"
+}
+
+
+return(orquideas_filtrados)
+
+}) 
+
+ 
+
+# Mapa interactivo de registros de presencia
+output$mapa <- renderLeaflet({
+	# Filtrado del conjunto de datos
+orquideasf <- filtrar_orquideas()	
+  
+  
+riqueza_especies_orquideas_areas_conservacion <-
+orquideasf |> 
+st_drop_geometry() |>
+group_by(objectid) |>
+summarize(riqueza_especies_orquideas = n_distinct(species, na.rm = TRUE))
+
+
+areas_conservacion_union_riqueza <-
+left_join(
+  x = areasconservacion,
+  y = dplyr::select(riqueza_especies_orquideas_areas_conservacion, objectid, riqueza_especies_orquideas),
+  by = "objectid"
+) |>
+replace_na(list(riqueza_especies_orquideas = 0))
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = areas_conservacion_union_riqueza$riqueza_especies_orquideas,
+    na.color = "transparent"
+  )
+
+# Paleta de colores de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(orquideas$species))), 
+  domain = orquideas$species
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = areas_conservacion_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(areas_conservacion_union_riqueza$riqueza_especies_orquideas),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>nombre_ac:</strong>", areas_conservacion_union_riqueza$nombre_ac),
+      paste("<strong>Riqueza de especies:</strong>", areas_conservacion_union_riqueza$riqueza_especies_orquideas),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies de Orquídeas"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = areas_conservacion_union_riqueza$riqueza_especies_orquideas,
+    group = "Riqueza de especies de Orquídeas",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = orquideas,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_especies(orquideas$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", orquideas$species),
+      paste0("<strong>Localidad: </strong>", orquideas$locality),
+      paste0("<strong>Fecha: </strong>", orquideas$eventDate),
+      paste0("<strong>Fuente: </strong>", orquideas$institutionCode),
+      paste0("<a href='", orquideas$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |>  
+  addLegend(
+    position = "bottomleft",    
+    pal = colores_especies,
+    values = orquideas$species,
+    title = "Especies",
+    group = "Registros de presencia"    
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia")	
+})
+
+
+# Tabla interactiva de riqueza de especies por región
+output$tabla <- renderDataTable({
+	# Filtrado del conjunto de datos
+  orquideasf <- filtrar_orquideas()
+  
+orquideasf <- merge(x= as.data.frame(orquideasf) |>
+                      dplyr::select(species, objectid), ## tabla
+      y=as.data.frame(areasconservacion) |>
+        dplyr::select(objectid, nombre_ac), 
+      by="objectid") |> 
+      group_by(nombre_ac) |> 
+  mutate(riqueza = length((species))) |>
+  ungroup() |>
+  dplyr::select(nombre_ac, riqueza) |>
+  unique()
+
+  # Tabla interactiva
+  orquideasf |>
+    st_drop_geometry() |>
+    datatable(
+    	rownames = FALSE,
+      colnames = c("Nombre de área de conservación", "Riqueza de especies de orquídeas"),
+      options = list(
+      	pageLength = 5,
+        language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+      )
+    )
+})
+
+# Gráfico de barras con la riqueza de especies por región
+output$grafico <- renderPlotly({
+	# Filtrado del conjunto de datos
+  orquideasf <- filtrar_orquideas()
+
+tabla_riqueza <-
+
+merge(x= as.data.frame(orquideasf), ## tabla  orquideasf   orquideas_union_areasconservacion 
+      y=areasconservacion, 
+             by="objectid") |> 
+      dplyr::select(nombre_ac)
+
+
+grafico_barras_ggplot2 <-
+tabla_riqueza |>
+  ggplot(aes(x = fct_infreq(nombre_ac))) + 
+  geom_bar(
+    aes(
+      text = paste0(
+        "Cantidad de orquídeas: ", after_stat(count)
+      )
+    )    
+  ) +
+  ggtitle("Gráfico de barras con registros de orquídeas en áreas de conservación") +
+  xlab("Áreas de conservación") +
+  ylab("Cantidad de registros de orquídeas") +
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 30))
+
+# Gráfico de barras plotly
+ggplotly(grafico_barras_ggplot2, tooltip = "text") |> 
+  config(locale = 'es')
+  
+})
+```
+
+
